@@ -64,12 +64,25 @@ impl DigestType {
 #[derive(Debug, Clone)]
 pub enum SignatureAlgorithm {
     Ecdsa,
+    EcdsaDigest,
+    // Added signature algorithms for digest calc ECC
+    EcdsaDigestSha1,
+    EcdsaDigestSha224,
+    EcdsaDigestSha256,
+    EcdsaDigestSha384,
+    EcdsaDigestSha512,
     RsaRaw,
     RsaPkcs1v15Raw,
     RsaPkcs1v15Sha1,
     RsaPkcs1v15Sha384,
     RsaPkcs1v15Sha256,
     RsaPkcs1v15Sha512,
+    // Added signature algorithms for digest calc RSA
+    RsaDigestPkcs1v15Sha1,
+    RsaDigestPkcs1v15Sha224,
+    RsaDigestPkcs1v15Sha256,
+    RsaDigestPkcs1v15Sha384,
+    RsaDigestPkcs1v15Sha512,
     RsaPss {
         digest: DigestType,
         mask_generation_function: DigestType,

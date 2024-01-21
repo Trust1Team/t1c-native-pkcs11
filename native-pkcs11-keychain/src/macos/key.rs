@@ -42,22 +42,34 @@ fn sigalg_to_seckeyalg(
 ) -> Result<apple_security_framework_sys::key::Algorithm> {
     use apple_security_framework_sys::key::Algorithm::*;
     let alg = match signature_algorithm {
-        native_pkcs11_traits::SignatureAlgorithm::Ecdsa => ECDSASignatureRFC4754,
-        native_pkcs11_traits::SignatureAlgorithm::RsaRaw => RSASignatureRaw,
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Raw => RSASignatureDigestPKCS1v15Raw,
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha1 => {
-            RSASignatureMessagePKCS1v15SHA1
-        }
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha384 => {
-            RSASignatureMessagePKCS1v15SHA384
-        }
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha256 => {
-            RSASignatureMessagePKCS1v15SHA256
-        }
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha512 => {
-            RSASignatureMessagePKCS1v15SHA512
-        }
-        native_pkcs11_traits::SignatureAlgorithm::RsaPss {
+        // ECDSA Message
+        SignatureAlgorithm::Ecdsa => ECDSASignatureRFC4754,
+
+        // ECDSA Digest
+        SignatureAlgorithm::EcdsaDigest => ECDSASignatureDigestX962,
+        SignatureAlgorithm::EcdsaDigestSha1 => ECDSASignatureDigestX962SHA1,
+        SignatureAlgorithm::EcdsaDigestSha224 => ECDSASignatureDigestX962SHA224,
+        SignatureAlgorithm::EcdsaDigestSha256 => ECDSASignatureDigestX962SHA256,
+        SignatureAlgorithm::EcdsaDigestSha384 => ECDSASignatureDigestX962SHA384,
+        SignatureAlgorithm::EcdsaDigestSha512 => ECDSASignatureDigestX962SHA512,
+
+        // RSA Message
+        SignatureAlgorithm::RsaRaw => RSASignatureRaw,
+        SignatureAlgorithm::RsaPkcs1v15Raw => RSASignatureDigestPKCS1v15Raw,
+        SignatureAlgorithm::RsaPkcs1v15Sha1 => RSASignatureMessagePKCS1v15SHA1,
+        SignatureAlgorithm::RsaPkcs1v15Sha384 => RSASignatureMessagePKCS1v15SHA384,
+        SignatureAlgorithm::RsaPkcs1v15Sha256 => RSASignatureMessagePKCS1v15SHA256,
+        SignatureAlgorithm::RsaPkcs1v15Sha512 => RSASignatureMessagePKCS1v15SHA512,
+
+        // RSA Digest
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha1 => RSASignatureDigestPSSSHA1,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha224 => RSASignatureDigestPSSSHA224,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha256 => RSASignatureDigestPSSSHA256,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha384 => RSASignatureDigestPSSSHA384,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha512 => RSASignatureDigestPSSSHA512,
+
+        // PSS
+        SignatureAlgorithm::RsaPss {
             digest,
             mask_generation_function,
             salt_length,
@@ -77,6 +89,7 @@ fn sigalg_to_seckeyalg(
                 native_pkcs11_traits::DigestType::Sha512 => RSASignatureDigestPSSSHA512,
             }
         }
+
     };
     Ok(alg)
 }

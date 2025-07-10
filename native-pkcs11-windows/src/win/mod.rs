@@ -17,10 +17,10 @@ use std::{ffi::OsString, ops::Deref, str::FromStr, sync::Arc};
 
 use native_pkcs11_traits::Backend;
 use windows::{
-    core::ComInterface,
     Security::Cryptography::Certificates::CertificateStores,
     Storage::Streams::{Buffer, IBuffer},
     Win32::System::WinRT::IBufferByteAccess,
+    core::Interface,
 };
 
 //  https://stackoverflow.com/questions/2742739/how-do-i-know-what-the-storename-of-a-certificate-is
@@ -48,8 +48,7 @@ impl Deref for Bytes {
     fn deref(&self) -> &Self::Target {
         let interop = self.0.cast::<IBufferByteAccess>().unwrap();
         let data_ptr = unsafe { interop.Buffer() }.unwrap();
-        let s = unsafe { std::slice::from_raw_parts(data_ptr, self.0.Length().unwrap() as usize) };
-        s
+        unsafe { std::slice::from_raw_parts(data_ptr, self.0.Length().unwrap() as usize) }
     }
 }
 
@@ -114,6 +113,10 @@ impl Backend for WindowsBackend {
 pub struct WindowsCertificate {}
 
 impl native_pkcs11_traits::Certificate for WindowsCertificate {
+    fn id(&self) -> Vec<u8> {
+        todo!()
+    }
+
     fn label(&self) -> String {
         todo!()
     }

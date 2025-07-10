@@ -14,29 +14,27 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use apple_security_framework::{
-    item::{KeyClass, Location},
-    key::SecKey,
-};
-use apple_security_framework_sys::item::kSecAttrLabel;
 use core_foundation::{
     base::{TCFType, ToVoid},
     string::CFString,
 };
 use native_pkcs11_traits::Backend;
+use security_framework::{item::KeyClass, key::SecKey};
+use security_framework_sys::item::kSecAttrLabel;
 use tracing::instrument;
 
 use crate::{
-    certificate::{find_all_certificates, KeychainCertificate},
+    certificate::{KeychainCertificate, find_all_certificates},
     key::{
+        Algorithm,
+        KeychainPrivateKey,
+        KeychainPublicKey,
         find_all_keys,
         find_key,
         find_key2,
         generate_key,
-        Algorithm,
-        KeychainPrivateKey,
-        KeychainPublicKey,
     },
+    keychain,
 };
 
 #[derive(Debug, Default)]
@@ -87,20 +85,18 @@ impl Backend for KeychainBackend {
                 .and_then(|sec_key| KeychainPublicKey::new(sec_key, "").ok())
         };
         let opt_key = match query {
+            native_pkcs11_traits::KeySearchOptions::Id(id) => find_key2(KeyClass::private(), &id)?
+                .map(|sec_key| {
+                    let cert = find_pubkey_for_seckey(&sec_key);
+                    KeychainPrivateKey::new(sec_key, "", cert)
+                })
+                .transpose()?,
             native_pkcs11_traits::KeySearchOptions::Label(label) => {
                 find_key(KeyClass::private(), &label)
                     .ok()
                     .map(|sec_key| {
                         let cert = find_pubkey_for_seckey(&sec_key);
                         KeychainPrivateKey::new(sec_key, label, cert)
-                    })
-                    .transpose()?
-            }
-            native_pkcs11_traits::KeySearchOptions::PublicKeyHash(public_key_hash) => {
-                find_key2(KeyClass::private(), &public_key_hash)?
-                    .map(|sec_key| {
-                        let cert = find_pubkey_for_seckey(&sec_key);
-                        KeychainPrivateKey::new(sec_key, "", cert)
                     })
                     .transpose()?
             }
@@ -114,15 +110,13 @@ impl Backend for KeychainBackend {
         query: native_pkcs11_traits::KeySearchOptions,
     ) -> native_pkcs11_traits::Result<Option<Box<dyn native_pkcs11_traits::PublicKey>>> {
         let opt_key = match query {
+            native_pkcs11_traits::KeySearchOptions::Id(id) => find_key2(KeyClass::public(), &id)?
+                .map(|sec_key| KeychainPublicKey::new(sec_key, ""))
+                .transpose()?,
             native_pkcs11_traits::KeySearchOptions::Label(label) => {
                 find_key(KeyClass::public(), &label)
                     .ok()
                     .map(|sec_key| KeychainPublicKey::new(sec_key, label))
-                    .transpose()?
-            }
-            native_pkcs11_traits::KeySearchOptions::PublicKeyHash(public_key_hash) => {
-                find_key2(KeyClass::public(), &public_key_hash)?
-                    .map(|sec_key| KeychainPublicKey::new(sec_key, ""))
                     .transpose()?
             }
         };
@@ -140,10 +134,8 @@ impl Backend for KeychainBackend {
             native_pkcs11_traits::KeyAlgorithm::Ecc => Algorithm::ECC,
         };
         let label = label.unwrap_or("");
-        Ok(
-            generate_key(alg, label, Some(Location::DefaultFileKeychain))
-                .map(|key| KeychainPrivateKey::new(key, label, None).map(Arc::new))??,
-        )
+        Ok(generate_key(alg, label, keychain::location()?)
+            .map(|key| KeychainPrivateKey::new(key, label, None).map(Arc::new))??)
     }
 
     fn find_all_private_keys(
@@ -153,10 +145,8 @@ impl Backend for KeychainBackend {
         let keys = sec_keys
             .into_iter()
             .filter_map(|sec_key| {
-                let label: Option<String> = sec_key
-                    .attributes()
-                    .find(unsafe { kSecAttrLabel }.to_void())
-                    .map(|label| {
+                let label: Option<String> =
+                    sec_key.attributes().find(unsafe { kSecAttrLabel }.to_void()).map(|label| {
                         unsafe { CFString::wrap_under_get_rule(label.cast()) }.to_string()
                     });
                 let label: String = label.unwrap_or_default();
@@ -176,10 +166,8 @@ impl Backend for KeychainBackend {
         let keys = sec_keys
             .into_iter()
             .filter_map(|sec_key| {
-                let label: Option<String> = sec_key
-                    .attributes()
-                    .find(unsafe { kSecAttrLabel }.to_void())
-                    .map(|label| {
+                let label: Option<String> =
+                    sec_key.attributes().find(unsafe { kSecAttrLabel }.to_void()).map(|label| {
                         unsafe { CFString::wrap_under_get_rule(label.cast()) }.to_string()
                     });
                 let label: String = label.unwrap_or_default();

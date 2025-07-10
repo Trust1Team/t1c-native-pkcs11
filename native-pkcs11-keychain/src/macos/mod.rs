@@ -25,11 +25,6 @@ pub mod certificate;
 pub mod key;
 pub mod keychain;
 
-//  NOTE(kcking): I think this just works because any non-System path defaults
-//  to the Login keychain
-pub const LOGIN_KEYCHAIN_PATH: &str = "login.keychain";
-pub const SYSTEM_KEYCHAIN_PATH: &str = "/Library/Keychains/System.keychain";
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Error {
@@ -48,10 +43,7 @@ impl std::error::Error for Error {}
 
 impl<E: Into<ErrorKind>> From<E> for Error {
     fn from(e: E) -> Self {
-        Error {
-            error: e.into(),
-            context: SpanTrace::capture(),
-        }
+        Error { error: e.into(), context: SpanTrace::capture() }
     }
 }
 
@@ -68,19 +60,7 @@ pub enum ErrorKind {
     Generic(String),
 
     #[error("{0}")]
-    Der(#[from] x509_cert::der::Error),
-
-    #[error("{0}")]
-    SecurityFramework(#[from] apple_security_framework::base::Error),
-
-    #[error("{0}")]
-    Spki(#[from] x509_cert::spki::Error),
-
-    #[error("{0}")]
-    P256(#[from] p256::elliptic_curve::Error),
-
-    #[error("{0}")]
-    Pkcs1(#[from] rsa::pkcs1::Error),
+    SecurityFramework(#[from] security_framework::base::Error),
 
     #[error("{0:?}")]
     UnsupportedSignatureAlgorithm(SignatureAlgorithm),
@@ -88,9 +68,7 @@ pub enum ErrorKind {
 
 impl From<CFError> for ErrorKind {
     fn from(e: CFError) -> Self {
-        ErrorKind::SecurityFramework(apple_security_framework::base::Error::from_code(
-            e.code() as i32
-        ))
+        ErrorKind::SecurityFramework(security_framework::base::Error::from_code(e.code() as i32))
     }
 }
 

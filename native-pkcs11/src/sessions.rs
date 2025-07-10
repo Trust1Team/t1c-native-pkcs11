@@ -14,14 +14,13 @@
 
 use std::{
     collections::HashMap,
-    sync::{self, atomic::Ordering, Arc},
+    sync::{self, Arc, LazyLock, atomic::Ordering},
 };
 
 use native_pkcs11_traits::{PrivateKey, SignatureAlgorithm};
-use once_cell::sync::Lazy;
 use pkcs11_sys::{CK_BYTE_PTR, CK_FLAGS, CK_OBJECT_HANDLE, CK_SESSION_HANDLE, CK_ULONG_PTR};
 
-use crate::{object_store::ObjectStore, Error, Result};
+use crate::{Error, Result, object_store::ObjectStore};
 
 // "Valid session handles in Cryptoki always have nonzero values."
 #[cfg(not(target_os = "windows"))]
@@ -31,8 +30,8 @@ static NEXT_SESSION_HANDLE: std::sync::atomic::AtomicU32 = std::sync::atomic::At
 
 type SessionMap = HashMap<CK_SESSION_HANDLE, Session>;
 
-static SESSIONS: Lazy<sync::Mutex<SessionMap>> = Lazy::new(Default::default);
-pub static OBJECT_STORE: Lazy<sync::Mutex<ObjectStore>> = Lazy::new(Default::default);
+static SESSIONS: LazyLock<sync::Mutex<SessionMap>> = LazyLock::new(Default::default);
+pub static OBJECT_STORE: LazyLock<sync::Mutex<ObjectStore>> = LazyLock::new(Default::default);
 
 #[derive(Debug)]
 pub struct FindContext {
@@ -59,9 +58,7 @@ impl Session {
             Some(sign_ctx) => sign_ctx,
             None => return Err(Error::OperationNotInitialized),
         };
-        let data = data
-            .or(sign_ctx.payload.as_deref())
-            .ok_or(Error::OperationNotInitialized)?;
+        let data = data.or(sign_ctx.payload.as_deref()).ok_or(Error::OperationNotInitialized)?;
         let signature = match sign_ctx.private_key.sign(&sign_ctx.algorithm, data) {
             Ok(sig) => sig,
             Err(e) => {
@@ -95,13 +92,7 @@ pub struct Session {
 
 pub fn create(flags: CK_FLAGS) -> CK_SESSION_HANDLE {
     let handle = NEXT_SESSION_HANDLE.fetch_add(1, Ordering::SeqCst);
-    SESSIONS.lock().unwrap().insert(
-        handle,
-        Session {
-            flags,
-            ..Default::default()
-        },
-    );
+    SESSIONS.lock().unwrap().insert(handle, Session { flags, ..Default::default() });
     handle
 }
 

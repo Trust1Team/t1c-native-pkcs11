@@ -23,21 +23,24 @@ on:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   build:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
-        toolchain: ["1.65", "stable"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: rustup update stable --no-self-update
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
         with:
-          toolchain: ${{ matrix.toolchain }}
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Build workspace
         run: cargo build --verbose
       # Catch individual crates not enabling all features they need.
@@ -46,44 +49,38 @@ jobs:
         run:
           for crate in native-pkcs11 native-pkcs11-core native-pkcs11-traits
           pkcs11-sys native-pkcs11-keychain native-pkcs11-windows; do cargo
-          build -p $crate || exit 1 ; done
+          build --verbose -p $crate || exit 1 ; done
+      - run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          cargo +nightly fmt -- --check
+      - name: Run Clippy (default features)
+        run: cargo clippy --tests -- -D warnings
+      - name: Run Clippy (all features)
+        run: cargo clippy --tests --all-features -- -D warnings
+      # - name: Run cargo-deny
+      #   if: matrix.os == 'ubuntu-latest'
+      #   uses: EmbarkStudios/cargo-deny-action@e2f4ede4a4e60ea15ff31bc0647485d80c66cfba # v1.6.3∂ß
 
-  cargo-deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-      - uses: EmbarkStudios/cargo-deny-action@1e59595bed8fc55c969333d08d7817b36888f0c5 # v1.5.5
-
-  clippy:
+  test:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v1.2.0
-      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: |
+          rustup update stable --no-self-update
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
         with:
-          toolchain: stable
-          components: clippy
-      - run: cargo clippy -- -D warnings
-
-  rustfmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v1.2.0
-      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8
-        with:
-          toolchain: nightly
-          components: rustfmt
-      - run: cargo fmt -- --check
-
-  integration-macos-ssh:
-    name: macos ssh
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-      - uses: dtolnay/rust-toolchain@1482605bfc5719782e1267fd0c0cc350fe7646b8
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - run: ssh-testing/run.sh
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: cargo test
+        run: . tests/create_keychain.sh && cargo test --verbose
+      - run: tests/java/run.sh
+      - run: tests/ssh/run.sh

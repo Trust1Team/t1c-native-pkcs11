@@ -20,24 +20,23 @@ pub use native_pkcs11_core::Error;
 use native_pkcs11_traits::backend;
 use tracing::metadata::LevelFilter;
 use tracing_error::ErrorLayer;
-use tracing_subscriber::{fmt::format::FmtSpan, prelude::*, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt::format::FmtSpan, prelude::*};
 mod object_store;
 mod sessions;
 mod utils;
 
 use std::{
     cmp,
-    convert::TryInto,
     slice,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Once,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
 use native_pkcs11_core::{
     attribute::{Attribute, Attributes},
-    mechanism::{parse_mechanism, SUPPORTED_SIGNATURE_MECHANISMS},
+    mechanism::{SUPPORTED_SIGNATURE_MECHANISMS, parse_mechanism},
     object::{self, Object},
 };
 use pkcs11_sys::*;
@@ -66,7 +65,12 @@ where
     match f() {
         Ok(()) => CKR_OK,
         Err(e) => {
-            tracing::error!(%e);
+            match e {
+                // Some PKCS #11 return values indicate routine conditions that
+                // should not be logged at the default log level.
+                Error::AttributeTypeInvalid(_) => tracing::debug!(%e),
+                _ => tracing::error!(%e),
+            }
             e.into()
         }
     }
@@ -75,7 +79,7 @@ where
 macro_rules! cryptoki_fn {
     (fn $name:ident ( $($arg:ident : $type:ty),* $(,)?) $body:block) => {
         #[tracing::instrument]
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "C" fn $name($($arg: $type),*) -> CK_RV {
             // TODO(bweeks): should this be `expr` instead of `block`?
             result_to_rv(|| $body)
@@ -83,7 +87,7 @@ macro_rules! cryptoki_fn {
     };
     (unsafe fn $name:ident ( $($arg:ident : $type:ty),* $(,)?) $body:block) => {
         #[tracing::instrument]
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name($($arg: $type),*) -> CK_RV {
             // TODO(bweeks): should this be `expr` instead of `block`?
             result_to_rv(|| $body)
@@ -130,7 +134,7 @@ macro_rules! valid_slot {
 }
 
 //  Export necessary items for registering a custom Backend.
-pub use pkcs11_sys::{CKR_OK, CK_FUNCTION_LIST, CK_FUNCTION_LIST_PTR_PTR, CK_RV};
+pub use pkcs11_sys::{CK_FUNCTION_LIST, CK_FUNCTION_LIST_PTR_PTR, CK_RV, CKR_OK};
 pub static mut FUNC_LIST: CK_FUNCTION_LIST = CK_FUNCTION_LIST {
     // In this structure ‘version’ is the cryptoki specification version number. The major and minor
     // versions must be set to 0x02 and 0x28 indicating a version 2.40 compatible structure.
@@ -281,7 +285,7 @@ cryptoki_fn!(
 cryptoki_fn!(
     unsafe fn C_GetFunctionList(ppFunctionList: CK_FUNCTION_LIST_PTR_PTR) {
         not_null!(ppFunctionList);
-        unsafe { *ppFunctionList = &mut FUNC_LIST };
+        unsafe { *ppFunctionList = std::ptr::addr_of_mut!(FUNC_LIST) };
 
         #[cfg(target_os = "macos")]
         native_pkcs11_traits::register_backend(Box::new(
@@ -397,10 +401,7 @@ cryptoki_fn!(
         if !SUPPORTED_SIGNATURE_MECHANISMS.contains(&mechType) {
             return Err(Error::MechanismInvalid(mechType));
         }
-        let info = CK_MECHANISM_INFO {
-            flags: CKF_SIGN,
-            ..Default::default()
-        };
+        let info = CK_MECHANISM_INFO { flags: CKF_SIGN, ..Default::default() };
         unsafe { *pInfo = info };
         Ok(())
     }
@@ -485,17 +486,9 @@ cryptoki_fn!(
         valid_session!(hSession);
         not_null!(pInfo);
         let flags = sessions::flags(hSession);
-        let state = if flags & CKF_RW_SESSION == 0 {
-            CKS_RO_USER_FUNCTIONS
-        } else {
-            CKS_RW_USER_FUNCTIONS
-        };
-        let info = CK_SESSION_INFO {
-            slotID: SLOT_ID,
-            state,
-            flags,
-            ulDeviceError: 0,
-        };
+        let state =
+            if flags & CKF_RW_SESSION == 0 { CKS_RO_USER_FUNCTIONS } else { CKS_RW_USER_FUNCTIONS };
+        let info = CK_SESSION_INFO { slotID: SLOT_ID, state, flags, ulDeviceError: 0 };
         unsafe { *pInfo = info };
         Ok(())
     }
@@ -594,6 +587,7 @@ cryptoki_fn!(
             } else {
                 &mut []
             };
+            let mut result = Ok(());
             for attribute in template.iter_mut() {
                 let type_ = attribute
                     .type_
@@ -606,15 +600,17 @@ cryptoki_fn!(
                         continue;
                     }
                     if (attribute.ulValueLen as usize) < value.len() {
+                        result = Err(Error::BufferTooSmall);
                         continue;
                     }
                     unsafe { slice::from_raw_parts_mut(attribute.pValue as *mut u8, value.len()) }
                         .copy_from_slice(&value);
                 } else {
                     attribute.ulValueLen = CK_UNAVAILABLE_INFORMATION;
+                    result = Err(Error::AttributeTypeInvalid(attribute.type_));
                 }
             }
-            Ok(())
+            result
         })
     }
 );
@@ -675,10 +671,7 @@ cryptoki_fn!(
             let max_objects = cmp::min(find_ctx.objects.len(), ulMaxObjectCount as usize);
             let output = unsafe { slice::from_raw_parts_mut(phObject, max_objects) };
             output.copy_from_slice(
-                &find_ctx
-                    .objects
-                    .drain(0..max_objects)
-                    .collect::<Vec<CK_OBJECT_HANDLE>>(),
+                &find_ctx.objects.drain(0..max_objects).collect::<Vec<CK_OBJECT_HANDLE>>(),
             );
             unsafe { *pulObjectCount = max_objects as CK_ULONG };
             Ok(())
@@ -1087,9 +1080,8 @@ pub mod tests {
 
     pub fn test_init() {
         if !INITIALIZED.load(std::sync::atomic::Ordering::SeqCst) {
-            let mut func_list: &mut CK_FUNCTION_LIST = &mut CK_FUNCTION_LIST {
-                ..Default::default()
-            };
+            let mut func_list: &mut CK_FUNCTION_LIST =
+                &mut CK_FUNCTION_LIST { ..Default::default() };
             unsafe { C_GetFunctionList((&mut func_list) as *mut _ as *mut _) };
         }
     }
@@ -1098,22 +1090,19 @@ pub mod tests {
     #[serial]
     fn get_initialize() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
-        assert_eq!(
-            unsafe { C_Initialize(ptr::null_mut()) },
-            CKR_CRYPTOKI_ALREADY_INITIALIZED
-        );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_CRYPTOKI_ALREADY_INITIALIZED);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         let mut args = CK_C_INITIALIZE_ARGS::default();
         assert_eq!(
-            unsafe { C_Initialize(&mut args as CK_C_INITIALIZE_ARGS_PTR as *mut std::ffi::c_void) },
+            C_Initialize(&mut args as CK_C_INITIALIZE_ARGS_PTR as *mut std::ffi::c_void),
             CKR_OK
         );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         // Expect CKR_ARGUMENTS_BAD if pReserved is not null.
-        args.pReserved = 1 as *mut u32 as *mut std::ffi::c_void;
+        args.pReserved = std::ptr::dangling_mut::<u32>() as *mut std::ffi::c_void;
         assert_eq!(
-            unsafe { C_Initialize(&mut args as CK_C_INITIALIZE_ARGS_PTR as *mut std::ffi::c_void) },
+            C_Initialize(&mut args as CK_C_INITIALIZE_ARGS_PTR as *mut std::ffi::c_void),
             CKR_ARGUMENTS_BAD
         );
     }
@@ -1122,34 +1111,28 @@ pub mod tests {
     #[serial]
     fn finalize() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         // Expect CKR_ARGUMENTS_BAD if pReserved is not null.
         assert_eq!(
-            unsafe { C_Finalize(1 as *mut u32 as *mut std::ffi::c_void) },
+            C_Finalize(std::ptr::dangling_mut::<u32>() as *mut std::ffi::c_void),
             CKR_ARGUMENTS_BAD
         );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
-        assert_eq!(
-            unsafe { C_Finalize(ptr::null_mut()) },
-            CKR_CRYPTOKI_NOT_INITIALIZED
-        );
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_CRYPTOKI_NOT_INITIALIZED);
     }
 
     #[test]
     #[serial]
     fn get_info() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut info = CK_INFO::default();
         assert_eq!(unsafe { C_GetInfo(&mut info) }, CKR_OK);
         // Expect CKR_ARGUMENTS_BAD if pInfo is null.
         assert_eq!(unsafe { C_GetInfo(ptr::null_mut()) }, CKR_ARGUMENTS_BAD);
         // Expect CKR_CRYPTOKI_NOT_INITIALIZED if token is not initialized.
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
-        assert_eq!(
-            unsafe { C_GetInfo(&mut info) },
-            CKR_CRYPTOKI_NOT_INITIALIZED
-        );
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
+        assert_eq!(unsafe { C_GetInfo(&mut info) }, CKR_CRYPTOKI_NOT_INITIALIZED);
     }
 
     #[test]
@@ -1158,27 +1141,18 @@ pub mod tests {
         test_init();
         let mut function_list = CK_FUNCTION_LIST::default();
         let mut function_list_pointer: *mut CK_FUNCTION_LIST = &mut function_list;
-        assert_eq!(
-            unsafe { C_GetFunctionList(&mut function_list_pointer) },
-            CKR_OK
-        );
+        assert_eq!(unsafe { C_GetFunctionList(&mut function_list_pointer) }, CKR_OK);
         // Expect CKR_ARGUMENTS_BAD if ppFunctionList is null.
-        assert_eq!(
-            unsafe { C_GetFunctionList(ptr::null_mut()) },
-            CKR_ARGUMENTS_BAD
-        );
+        assert_eq!(unsafe { C_GetFunctionList(ptr::null_mut()) }, CKR_ARGUMENTS_BAD);
     }
 
     #[test]
     #[serial]
     fn get_slot_list() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut count = 0;
-        assert_eq!(
-            unsafe { C_GetSlotList(CK_FALSE, std::ptr::null_mut(), &mut count) },
-            CKR_OK
-        );
+        assert_eq!(unsafe { C_GetSlotList(CK_FALSE, std::ptr::null_mut(), &mut count) }, CKR_OK);
         assert_eq!(count, 1);
         // Expect CKR_ARGUMENTS_BAD if pulCount is null.
         assert_eq!(
@@ -1194,7 +1168,7 @@ pub mod tests {
             CKR_BUFFER_TOO_SMALL
         );
         // Expect CKR_CRYPTOKI_NOT_INITIALIZED if token is not initialized.
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         assert_eq!(
             unsafe { C_GetSlotList(CK_FALSE, std::ptr::null_mut(), &mut count) },
             CKR_CRYPTOKI_NOT_INITIALIZED
@@ -1205,48 +1179,30 @@ pub mod tests {
     #[serial]
     fn get_slot_info() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut slot_info = CK_SLOT_INFO::default();
         assert_eq!(unsafe { C_GetSlotInfo(SLOT_ID, &mut slot_info) }, CKR_OK);
         // Expect CKR_ARGUMENTS_BAD if pInfo is null.
-        assert_eq!(
-            unsafe { C_GetSlotInfo(SLOT_ID, ptr::null_mut()) },
-            CKR_ARGUMENTS_BAD
-        );
+        assert_eq!(unsafe { C_GetSlotInfo(SLOT_ID, ptr::null_mut()) }, CKR_ARGUMENTS_BAD);
         // Expect CKR_SLOT_ID_INVALID if slotID references a nonexistent slot.
-        assert_eq!(
-            unsafe { C_GetSlotInfo(SLOT_ID + 1, ptr::null_mut()) },
-            CKR_SLOT_ID_INVALID
-        );
+        assert_eq!(unsafe { C_GetSlotInfo(SLOT_ID + 1, ptr::null_mut()) }, CKR_SLOT_ID_INVALID);
         // Expect CKR_CRYPTOKI_NOT_INITIALIZED if token is not initialized.
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
-        assert_eq!(
-            unsafe { C_GetSlotInfo(SLOT_ID, &mut slot_info) },
-            CKR_CRYPTOKI_NOT_INITIALIZED
-        );
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
+        assert_eq!(unsafe { C_GetSlotInfo(SLOT_ID, &mut slot_info) }, CKR_CRYPTOKI_NOT_INITIALIZED);
     }
 
     #[test]
     #[serial]
     fn get_token_info() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
-        assert_eq!(
-            unsafe { C_GetTokenInfo(SLOT_ID, &mut CK_TOKEN_INFO::default()) },
-            CKR_OK
-        );
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
+        assert_eq!(unsafe { C_GetTokenInfo(SLOT_ID, &mut CK_TOKEN_INFO::default()) }, CKR_OK);
         // Expect CKR_SLOT_ID_INVALID if slotID references a nonexistent slot.
-        assert_eq!(
-            unsafe { C_GetTokenInfo(SLOT_ID + 1, ptr::null_mut()) },
-            CKR_SLOT_ID_INVALID
-        );
+        assert_eq!(unsafe { C_GetTokenInfo(SLOT_ID + 1, ptr::null_mut()) }, CKR_SLOT_ID_INVALID);
         // Expect CKR_ARGUMENTS_BAD if pInfo is null.
-        assert_eq!(
-            unsafe { C_GetSlotInfo(SLOT_ID, ptr::null_mut()) },
-            CKR_ARGUMENTS_BAD
-        );
+        assert_eq!(unsafe { C_GetSlotInfo(SLOT_ID, ptr::null_mut()) }, CKR_ARGUMENTS_BAD);
         // Expect CKR_CRYPTOKI_NOT_INITIALIZED if token is not initialized.
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         assert_eq!(
             unsafe { C_GetTokenInfo(SLOT_ID, &mut CK_TOKEN_INFO::default()) },
             CKR_CRYPTOKI_NOT_INITIALIZED
@@ -1257,12 +1213,9 @@ pub mod tests {
     #[serial]
     fn get_mechanism_list() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut count = 0;
-        assert_eq!(
-            unsafe { C_GetMechanismList(SLOT_ID, ptr::null_mut(), &mut count) },
-            CKR_OK
-        );
+        assert_eq!(unsafe { C_GetMechanismList(SLOT_ID, ptr::null_mut(), &mut count) }, CKR_OK);
         assert_ne!(count, 0);
         let mut mechanisms = Vec::<CK_MECHANISM_TYPE>::with_capacity(count as usize);
         assert_eq!(
@@ -1290,7 +1243,7 @@ pub mod tests {
             CKR_BUFFER_TOO_SMALL
         );
         // Expect CKR_CRYPTOKI_NOT_INITIALIZED if token is not initialized.
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         assert_eq!(
             unsafe { C_GetMechanismList(SLOT_ID, ptr::null_mut(), ptr::null_mut()) },
             CKR_CRYPTOKI_NOT_INITIALIZED
@@ -1301,7 +1254,7 @@ pub mod tests {
     #[serial]
     fn get_mechanism_info() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut info = CK_MECHANISM_INFO::default();
         assert_eq!(
             unsafe { C_GetMechanismInfo(SLOT_ID, SUPPORTED_SIGNATURE_MECHANISMS[0], &mut info) },
@@ -1320,7 +1273,7 @@ pub mod tests {
             CKR_ARGUMENTS_BAD
         );
         // Expect CKR_CRYPTOKI_NOT_INITIALIZED if token is not initialized.
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         assert_eq!(
             unsafe {
                 C_GetMechanismInfo(SLOT_ID, SUPPORTED_SIGNATURE_MECHANISMS[0], ptr::null_mut())
@@ -1333,7 +1286,7 @@ pub mod tests {
     #[serial]
     fn open_session() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let flags = CKF_SERIAL_SESSION;
         let mut handle = CK_INVALID_HANDLE;
         assert_eq!(
@@ -1356,94 +1309,64 @@ pub mod tests {
             unsafe { C_OpenSession(SLOT_ID, flags, ptr::null_mut(), None, ptr::null_mut()) },
             CKR_ARGUMENTS_BAD
         );
-        assert_eq!(unsafe { C_CloseSession(handle) }, CKR_OK);
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_CloseSession(handle), CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
     }
 
     #[test]
     #[serial]
     fn close_sesson() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut handle = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut handle,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut handle)
             },
             CKR_OK
         );
-        assert_eq!(unsafe { C_CloseSession(handle) }, CKR_OK);
+        assert_eq!(C_CloseSession(handle), CKR_OK);
         // Expect CKR_SESSION_HANDLE_INVALID if the session has already been closed.
-        assert_eq!(
-            unsafe { C_CloseSession(handle) },
-            CKR_SESSION_HANDLE_INVALID
-        );
+        assert_eq!(C_CloseSession(handle), CKR_SESSION_HANDLE_INVALID);
         // Expect CKR_SESSION_HANDLE_INVALID if hSession is not a valid handle.
-        assert_eq!(
-            unsafe { C_CloseSession(CK_INVALID_HANDLE) },
-            CKR_SESSION_HANDLE_INVALID
-        );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_CloseSession(CK_INVALID_HANDLE), CKR_SESSION_HANDLE_INVALID);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
     }
 
     #[test]
     #[serial]
     fn get_session_info() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut handle = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut handle,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut handle)
             },
             CKR_OK
         );
         let mut session_info = CK_SESSION_INFO::default();
-        assert_eq!(
-            unsafe { C_GetSessionInfo(handle, &mut session_info) },
-            CKR_OK
-        );
+        assert_eq!(unsafe { C_GetSessionInfo(handle, &mut session_info) }, CKR_OK);
         // Expect CKR_SESSION_HANDLE_INVALID if hSession is not a valid handle.
         assert_eq!(
             unsafe { C_GetSessionInfo(CK_INVALID_HANDLE, &mut session_info) },
             CKR_SESSION_HANDLE_INVALID
         );
         // Expect CKR_ARGUMENTS_BAD if pInfo is null.
-        assert_eq!(
-            unsafe { C_GetSessionInfo(handle, ptr::null_mut()) },
-            CKR_ARGUMENTS_BAD
-        );
-        assert_eq!(unsafe { C_CloseSession(handle) }, CKR_OK);
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(unsafe { C_GetSessionInfo(handle, ptr::null_mut()) }, CKR_ARGUMENTS_BAD);
+        assert_eq!(C_CloseSession(handle), CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
     }
 
     #[test]
     #[serial]
     fn get_attribute_value() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut session_h = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut session_h,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut session_h)
             },
             CKR_OK
         );
@@ -1460,7 +1383,7 @@ pub mod tests {
             },
             CKR_OBJECT_HANDLE_INVALID
         );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         assert_eq!(
             unsafe { C_GetAttributeValue(session_h, 0, template.as_mut_ptr(), 0) },
             CKR_CRYPTOKI_NOT_INITIALIZED
@@ -1471,17 +1394,11 @@ pub mod tests {
     #[serial]
     fn find_objects_init() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut handle = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut handle,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut handle)
             },
             CKR_OK
         );
@@ -1490,7 +1407,7 @@ pub mod tests {
             unsafe { C_FindObjectsInit(handle, template.as_mut_ptr(), template.len() as CK_ULONG) },
             CKR_OK
         );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         assert_eq!(
             unsafe { C_FindObjectsInit(handle, template.as_mut_ptr(), template.len() as CK_ULONG) },
             CKR_CRYPTOKI_NOT_INITIALIZED
@@ -1501,17 +1418,11 @@ pub mod tests {
     #[serial]
     fn find_objects() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut handle = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut handle,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut handle)
             },
             CKR_OK
         );
@@ -1520,17 +1431,11 @@ pub mod tests {
             pValue: CKO_PRIVATE_KEY as CK_VOID_PTR,
             ulValueLen: std::mem::size_of_val(&CKO_PRIVATE_KEY) as CK_ULONG,
         }];
-        assert_eq!(
-            unsafe { C_FindObjectsInit(handle, template.as_mut_ptr(), 0) },
-            CKR_OK
-        );
+        assert_eq!(unsafe { C_FindObjectsInit(handle, template.as_mut_ptr(), 0) }, CKR_OK);
         let mut objects = vec![CK_OBJECT_HANDLE::default()];
         let mut count = 0;
-        assert_eq!(
-            unsafe { C_FindObjects(handle, objects.as_mut_ptr(), 1, &mut count) },
-            CKR_OK
-        );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(unsafe { C_FindObjects(handle, objects.as_mut_ptr(), 1, &mut count) }, CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
         assert_eq!(
             unsafe { C_FindObjects(handle, ptr::null_mut(), 0, ptr::null_mut()) },
             CKR_CRYPTOKI_NOT_INITIALIZED
@@ -1541,17 +1446,11 @@ pub mod tests {
     #[serial]
     fn find_objects_final() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut handle = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut handle,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut handle)
             },
             CKR_OK
         );
@@ -1560,60 +1459,39 @@ pub mod tests {
             unsafe { C_FindObjectsInit(handle, template.as_mut_ptr(), template.len() as CK_ULONG) },
             CKR_OK
         );
-        assert_eq!(unsafe { C_FindObjectsFinal(handle) }, CKR_OK);
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
-        assert_eq!(
-            unsafe { C_FindObjectsFinal(handle) },
-            CKR_CRYPTOKI_NOT_INITIALIZED
-        );
+        assert_eq!(C_FindObjectsFinal(handle), CKR_OK);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
+        assert_eq!(C_FindObjectsFinal(handle), CKR_CRYPTOKI_NOT_INITIALIZED);
     }
 
     #[test]
     #[serial]
     fn get_function_status() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut session_h = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut session_h,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut session_h)
             },
             CKR_OK
         );
-        assert_eq!(
-            unsafe { C_GetFunctionStatus(session_h) },
-            CKR_FUNCTION_NOT_PARALLEL
-        );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_GetFunctionStatus(session_h), CKR_FUNCTION_NOT_PARALLEL);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
     }
     #[test]
     #[serial]
     fn cancel_function() {
         test_init();
-        assert_eq!(unsafe { C_Initialize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_Initialize(ptr::null_mut()), CKR_OK);
         let mut session_h = CK_INVALID_HANDLE;
         assert_eq!(
             unsafe {
-                C_OpenSession(
-                    SLOT_ID,
-                    CKF_SERIAL_SESSION,
-                    ptr::null_mut(),
-                    None,
-                    &mut session_h,
-                )
+                C_OpenSession(SLOT_ID, CKF_SERIAL_SESSION, ptr::null_mut(), None, &mut session_h)
             },
             CKR_OK
         );
-        assert_eq!(
-            unsafe { C_GetFunctionStatus(session_h) },
-            CKR_FUNCTION_NOT_PARALLEL
-        );
-        assert_eq!(unsafe { C_Finalize(ptr::null_mut()) }, CKR_OK);
+        assert_eq!(C_GetFunctionStatus(session_h), CKR_FUNCTION_NOT_PARALLEL);
+        assert_eq!(C_Finalize(ptr::null_mut()), CKR_OK);
     }
 }

@@ -38,3 +38,28 @@ pub extern "C" fn C_GetFunctionList(ppFunctionList: CK_FUNCTION_LIST_PTR_PTR) ->
     return CKR_OK;
 }
 ```
+
+## Running tests
+
+### macOS
+
+Create a tempory keychain and set `NATIVE_PKCS11_KEYCHAIN_PATH` to run `cargo test` without endless password prompts.
+```
+$ . tests/create_keychain.sh
+$ cargo test
+```
+
+## Releasing
+
+The [`cargo-ws`](https://github.com/pksunkara/cargo-workspaces) tool can be used
+to version bump and release all crates in the workspace at once. It can be
+installed with `cargo install cargo-workspaces`.
+
+```bash
+# Create a branch for the release PR
+git checkout -b release
+# Bump the version of all crates in the workspace
+cargo ws version --allow-branch=release --no-git-push
+# Publish all crates to crates.io
+cargo ws publish --no-git-push
+```

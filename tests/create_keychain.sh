@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 Google LLC
+# Copyright 2024 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -e
-
-# https://stackoverflow.com/questions/59895/how-do-i-get-the-directory-where-a-bash-script-is-located-from-within-the-script
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-
-codesign --options runtime --entitlements $SCRIPT_DIR/Entitlements.plist -f -s "Apple Development: Google Development (69FHSU289T)" -i EQHXZ8M8AVom.com.google.corp.keychaintest $1
+NATIVE_PKCS11_TMPDIR=$(mktemp -d -p "${RUNNER_TEMP:-}") || return 1
+export NATIVE_PKCS11_TMPDIR
+export NATIVE_PKCS11_KEYCHAIN_PATH="$NATIVE_PKCS11_TMPDIR/Test.keychain"
+security create-keychain -p '' "$NATIVE_PKCS11_KEYCHAIN_PATH"

@@ -1,6 +1,6 @@
 [package]
 name = "native-pkcs11-core"
-version = "0.2.16"
+version = "0.2.27"
 description = "Shared cross-platform PKCS#11 module logic for native-pkcs11."
 authors.workspace = true
 edition.workspace = true
@@ -9,27 +9,21 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-bincode = "1.3.3"
-native-pkcs11-traits = { version = "0.2.0", path = "../native-pkcs11-traits" }
-once_cell = "1.19.0"
-p256 = { version = "0.13.2", default-features = false, features = [
-    "arithmetic",
-    "pkcs8",
-    "std",
-] }
+der = "0.7.10"
+native-pkcs11-traits = { version = "0.2.25", path = "../native-pkcs11-traits" }
 pkcs1 = { version = "0.7.5", default-features = false }
-pkcs11-sys = { version = "0.2.0", path = "../pkcs11-sys" }
-serde = { version = "1.0.195", features = ["derive"] }
-strum = "0.25.0"
-strum_macros = "0.25.3"
-thiserror = "1.0.56"
-tracing = "0.1.40"
+pkcs11-sys = { version = "0.2.25", path = "../pkcs11-sys" }
+pkcs8 = "0.10.2"
+strum = "0.27"
+strum_macros = "0.27"
+thiserror = "2"
+tracing = "0.1.41"
 
 [dev-dependencies]
-serial_test = { version = "3.0.0", default-features = false }
+serial_test = { version = "3.2.0", default-features = false }
 
 [target.'cfg(target_os="macos")'.dependencies]
-native-pkcs11-keychain = { version = "0.2.0", path = "../native-pkcs11-keychain" }
+native-pkcs11-keychain = { version = "0.2.26", path = "../native-pkcs11-keychain" }
 
 [target.'cfg(target_os="windows")'.dependencies]
-native-pkcs11-windows = { version = "0.2.0", path = "../native-pkcs11-windows" }
+native-pkcs11-windows = { version = "0.2.26", path = "../native-pkcs11-windows" }

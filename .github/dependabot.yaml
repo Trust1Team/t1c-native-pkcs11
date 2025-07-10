@@ -18,7 +18,20 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      cargo:
+        patterns:
+          - "*"
+    reviewers:
+      - "brandonweeks"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    reviewers:
+      - "brandonweeks"

@@ -14,19 +14,19 @@
 
 use std::fmt::Debug;
 
-use apple_security_framework::{
+use core_foundation::base::ToVoid;
+use native_pkcs11_traits::{KeyAlgorithm, PrivateKey, PublicKey, SignatureAlgorithm};
+use security_framework::{
     item::{ItemClass, KeyClass, Limit, Location, Reference},
     key::{GenerateKeyOptions, KeyType, SecKey},
 };
 // TODO(bweeks,kcking): remove dependency on security-framework-sys crate.
-use apple_security_framework_sys::item::{
+use security_framework_sys::item::{
     kSecAttrKeyType,
     kSecAttrKeyTypeEC,
     kSecAttrKeyTypeRSA,
     kSecAttrTokenID,
 };
-use core_foundation::base::ToVoid;
-use native_pkcs11_traits::{KeyAlgorithm, PrivateKey, PublicKey, SignatureAlgorithm};
 use tracing::instrument;
 
 use crate::Result;
@@ -39,8 +39,8 @@ pub enum Algorithm {
 
 fn sigalg_to_seckeyalg(
     signature_algorithm: &SignatureAlgorithm,
-) -> Result<apple_security_framework_sys::key::Algorithm> {
-    use apple_security_framework_sys::key::Algorithm::*;
+) -> Result<security_framework_sys::key::Algorithm> {
+    use security_framework_sys::key::Algorithm::*;
     let alg = match signature_algorithm {
         // ECDSA Message
         SignatureAlgorithm::Ecdsa => ECDSASignatureRFC4754,
@@ -97,8 +97,8 @@ fn sigalg_to_seckeyalg(
 #[derive(Debug)]
 pub struct KeychainPrivateKey {
     sec_key: SecKey,
+    id: Vec<u8>,
     label: String,
-    public_key_hash: Vec<u8>,
     algorithm: KeyAlgorithm,
     pub_key: Option<KeychainPublicKey>,
 }
@@ -110,13 +110,11 @@ impl KeychainPrivateKey {
         label: impl Into<String> + Debug,
         pub_key: Option<KeychainPublicKey>,
     ) -> Result<Self> {
-        let label = label.into();
-        let public_key_hash = sec_key.application_label().ok_or("no application_label")?;
         Ok(Self {
             algorithm: sec_key_algorithm(&sec_key)?,
+            id: sec_key.application_label().ok_or("no application_label")?,
             sec_key,
-            label,
-            public_key_hash,
+            label: label.into(),
             pub_key,
         })
     }
@@ -124,8 +122,8 @@ impl KeychainPrivateKey {
 
 impl PrivateKey for KeychainPrivateKey {
     #[instrument]
-    fn public_key_hash(&self) -> Vec<u8> {
-        self.public_key_hash.clone()
+    fn id(&self) -> Vec<u8> {
+        self.id.clone()
     }
 
     #[instrument]
@@ -173,10 +171,7 @@ impl PrivateKey for KeychainPrivateKey {
 
 fn sec_key_algorithm(sec_key: &SecKey) -> Result<KeyAlgorithm> {
     let attributes = sec_key.attributes();
-    if attributes
-        .find(unsafe { kSecAttrTokenID }.to_void())
-        .is_some()
-    {
+    if attributes.find(unsafe { kSecAttrTokenID }.to_void()).is_some() {
         //  The only possible kSecAttrtokenID is kSecAttrTokenIDSecureEnclave.
         //
         //  SecureEnclave keys do not have kSecAttrKeyType populated, but we can
@@ -198,21 +193,19 @@ fn sec_key_algorithm(sec_key: &SecKey) -> Result<KeyAlgorithm> {
 #[derive(Debug, Clone)]
 pub struct KeychainPublicKey {
     pub sec_key: SecKey,
+    id: Vec<u8>,
     pub label: String,
     der: Vec<u8>,
-    public_key_hash: Vec<u8>,
     algorithm: KeyAlgorithm,
 }
 
 impl KeychainPublicKey {
     #[instrument]
     pub fn new(sec_key: SecKey, label: impl Into<String> + Debug) -> Result<Self> {
-        let der = sec_key
-            .external_representation()
-            .ok_or("no external representation")?;
+        let der = sec_key.external_representation().ok_or("no external representation")?;
         let key_ty = sec_key_algorithm(&sec_key)?;
         Ok(Self {
-            public_key_hash: sec_key.application_label().ok_or("no application_label")?,
+            id: sec_key.application_label().ok_or("no application_label")?,
             sec_key,
             label: label.into(),
             der: der.to_vec(),
@@ -223,8 +216,8 @@ impl KeychainPublicKey {
 
 impl PublicKey for KeychainPublicKey {
     #[instrument]
-    fn public_key_hash(&self) -> Vec<u8> {
-        self.public_key_hash.clone()
+    fn id(&self) -> Vec<u8> {
+        self.id.clone()
     }
 
     #[instrument]
@@ -262,26 +255,20 @@ impl PublicKey for KeychainPublicKey {
 }
 
 #[instrument(skip(location))]
-pub fn generate_key(
-    algorithm: Algorithm,
-    label: &str,
-    location: Option<Location>,
-) -> Result<SecKey> {
+pub fn generate_key(algorithm: Algorithm, label: &str, location: Location) -> Result<SecKey> {
     let (ty, size) = match algorithm {
         Algorithm::RSA => (KeyType::rsa(), 2048),
         Algorithm::ECC => (KeyType::ec(), 256),
     };
 
-    let opts = GenerateKeyOptions {
-        key_type: Some(ty),
-        size_in_bits: Some(size),
-        label: Some(label.into()),
-        token: Some(apple_security_framework::key::Token::Software),
-        location,
-    }
-    .to_dictionary();
+    let mut opts = GenerateKeyOptions::default();
+    opts.set_key_type(ty);
+    opts.set_size_in_bits(size);
+    opts.set_label(label);
+    opts.set_token(security_framework::key::Token::Software);
+    opts.set_location(location);
 
-    Ok(SecKey::generate(opts).map_err(|e| e.to_string())?)
+    Ok(SecKey::new(&opts).map_err(|e| e.to_string())?)
 }
 
 pub fn find_key(class: KeyClass, label: &str) -> Result<SecKey> {
@@ -294,7 +281,7 @@ pub fn find_key(class: KeyClass, label: &str) -> Result<SecKey> {
         .search();
 
     let loaded_key = match results?.into_iter().next().ok_or("key not found")? {
-        apple_security_framework::item::SearchResult::Ref(Reference::Key(key)) => key,
+        security_framework::item::SearchResult::Ref(Reference::Key(key)) => key,
         _ => return Err("no key ref")?,
     };
 
@@ -321,9 +308,7 @@ pub fn find_key2(class: KeyClass, label: &[u8]) -> Result<Option<SecKey>> {
         .into_iter()
         .next()
         .map(|key| match key {
-            apple_security_framework::item::SearchResult::Ref(Reference::Key(key)) => {
-                Ok::<_, &str>(key)
-            }
+            security_framework::item::SearchResult::Ref(Reference::Key(key)) => Ok::<_, &str>(key),
             _ => Err("no key ref")?,
         })
         .transpose()?;
@@ -349,7 +334,7 @@ pub fn find_all_keys(key_class: KeyClass) -> Result<Vec<SecKey>> {
     let keys = results
         .into_iter()
         .filter_map(|res| match res {
-            apple_security_framework::item::SearchResult::Ref(Reference::Key(key)) => Some(key),
+            security_framework::item::SearchResult::Ref(Reference::Key(key)) => Some(key),
             _ => None,
         })
         .collect();
@@ -359,19 +344,19 @@ pub fn find_all_keys(key_class: KeyClass) -> Result<Vec<SecKey>> {
 
 #[cfg(test)]
 mod test {
-    use apple_security_framework::item::{add_item, AddRef, ItemAddOptions, Limit};
-    use apple_security_framework_sys::item::{kSecAttrLabel, kSecValueRef};
     use core_foundation::base::{TCFType, ToVoid};
-    use native_pkcs11_traits::{random_label, Backend};
+    use native_pkcs11_traits::{Backend, random_label};
+    use security_framework::item::{AddRef, ItemAddOptions, Limit};
+    use security_framework_sys::item::{kSecAttrLabel, kSecValueRef};
     use serial_test::serial;
 
     use super::*;
-    use crate::KeychainBackend;
+    use crate::{KeychainBackend, keychain};
     #[test]
     #[serial]
     fn key_label() -> crate::Result<()> {
         let label = random_label();
-        let key = generate_key(Algorithm::RSA, &label, Some(Location::DefaultFileKeychain))?;
+        let key = generate_key(Algorithm::RSA, &label, keychain::location()?)?;
 
         let mut found = false;
         for res in crate::keychain::item_search_options()?
@@ -384,8 +369,8 @@ mod test {
         {
             found = true;
             let (found_key, found_label) = match res {
-                apple_security_framework::item::SearchResult::Ref(_) => panic!(),
-                apple_security_framework::item::SearchResult::Dict(d) => {
+                security_framework::item::SearchResult::Ref(_) => panic!(),
+                security_framework::item::SearchResult::Dict(d) => {
                     let key = unsafe {
                         SecKey::wrap_under_get_rule(d.get(kSecValueRef.to_void()).cast_mut().cast())
                     };
@@ -396,8 +381,8 @@ mod test {
                     };
                     (key, label.to_string())
                 }
-                apple_security_framework::item::SearchResult::Data(_) => panic!(),
-                apple_security_framework::item::SearchResult::Other => panic!(),
+                security_framework::item::SearchResult::Data(_) => panic!(),
+                security_framework::item::SearchResult::Other => panic!(),
             };
 
             assert_eq!(
@@ -417,18 +402,12 @@ mod test {
     #[serial]
     fn key_lifecycle() -> Result<()> {
         for (key_alg, sig_alg) in [
-            (
-                Algorithm::ECC,
-                apple_security_framework_sys::key::Algorithm::ECDSASignatureDigestX962,
-            ),
-            (
-                Algorithm::RSA,
-                apple_security_framework_sys::key::Algorithm::RSASignatureDigestPKCS1v15Raw,
-            ),
+            (Algorithm::ECC, security_framework_sys::key::Algorithm::ECDSASignatureDigestX962),
+            (Algorithm::RSA, security_framework_sys::key::Algorithm::RSASignatureDigestPKCS1v15Raw),
         ] {
             let label = &random_label();
 
-            let key = generate_key(key_alg, label, Some(Location::DefaultFileKeychain))?;
+            let key = generate_key(key_alg, label, keychain::location()?)?;
 
             let first_pubkey = key
                 .public_key()
@@ -448,10 +427,7 @@ mod test {
             let sig_valid = loaded_pubkey.verify_signature(sig_alg, &payload, &signature)?;
             assert!(sig_valid);
 
-            assert_eq!(
-                loaded_pubkey.external_representation().unwrap().to_vec(),
-                first_pubkey
-            );
+            assert_eq!(loaded_pubkey.external_representation().unwrap().to_vec(), first_pubkey);
 
             loaded_key.public_key().ok_or("no pubkey")?.delete()?;
             loaded_key.delete()?;
@@ -464,14 +440,14 @@ mod test {
     #[ignore]
     fn stress_test_keygen() {
         let try_gen_key = || -> bool {
-            let label = &random_label();
-            match generate_key(Algorithm::RSA, &label, Some(Location::DefaultFileKeychain)) {
+            let label = random_label();
+            match generate_key(Algorithm::RSA, &label, keychain::location().unwrap()) {
                 Ok(key) => {
                     let _ = key.delete();
                     true
                 }
                 Err(e) => {
-                    eprintln!("{:?}", e);
+                    eprintln!("{e:?}");
                     false
                 }
             }
@@ -481,27 +457,15 @@ mod test {
         for _ in 0..20 {
             handles.push(std::thread::spawn(try_gen_key));
         }
-        assert!(
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                //  fold so we don't early exit other threads
-                .fold(true, |acc, b| acc && b)
-        );
+        //  fold so we don't early exit other threads
+        assert!(handles.into_iter().all(|h| h.join().unwrap()));
     }
 
     #[test]
+    #[ignore = "https://github.com/google/native-pkcs11/issues/302"]
     fn keychain_pubkey_hash_find() -> Result<()> {
-        let key1 = generate_key(
-            Algorithm::ECC,
-            &random_label(),
-            Some(Location::DefaultFileKeychain),
-        )?;
-        let key2 = generate_key(
-            Algorithm::ECC,
-            &random_label(),
-            Some(Location::DefaultFileKeychain),
-        )?;
+        let key1 = generate_key(Algorithm::ECC, &random_label(), keychain::location()?)?;
+        let key2 = generate_key(Algorithm::ECC, &random_label(), keychain::location()?)?;
         assert_ne!(key1.application_label(), key2.application_label());
 
         for keyclass in [KeyClass::public(), KeyClass::private()] {
@@ -537,22 +501,15 @@ mod test {
         //  public key from SecKeyCopyPublicKey (`.public_key()` in rust).
 
         let label = random_label();
-        let key1 = SecKey::generate(
-            GenerateKeyOptions::default()
-                .set_key_type(KeyType::ec())
-                .set_label(&label)
-                .to_dictionary(),
+        let key1 = SecKey::new(
+            GenerateKeyOptions::default().set_key_type(KeyType::ec()).set_label(&label),
         )?;
 
         let pubkey_hash = key1.public_key().unwrap().application_label().unwrap();
 
-        add_item(
-            ItemAddOptions::new(apple_security_framework::item::ItemAddValue::Ref(
-                AddRef::Key(key1),
-            ))
+        ItemAddOptions::new(security_framework::item::ItemAddValue::Ref(AddRef::Key(key1)))
             .set_label(&label)
-            .to_dictionary(),
-        )?;
+            .add()?;
 
         //  NOTE(kcking): this fails to find the generated key, most likely
         //  because application_label is not automatically populated by
@@ -579,7 +536,7 @@ mod test {
             })?
             .unwrap();
 
-        assert_eq!(pubkey_hash, found_key.public_key_hash());
+        assert_eq!(pubkey_hash, found_key.id());
 
         Ok(())
     }

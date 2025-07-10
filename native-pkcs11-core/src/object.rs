@@ -14,20 +14,19 @@
 
 use std::{ffi::CString, fmt::Debug, sync::Arc};
 
+use der::{Encode, asn1::OctetString};
 use native_pkcs11_traits::{
-    backend,
     Certificate,
     CertificateExt,
     KeyAlgorithm,
     PrivateKey,
     PublicKey,
+    backend,
 };
-use p256::pkcs8::{
-    der::{asn1::OctetString, Encode},
-    AssociatedOid,
-};
-use pkcs1::{der::Decode, RsaPublicKey};
+use pkcs1::{RsaPublicKey, der::Decode};
 use pkcs11_sys::{
+    CK_CERTIFICATE_CATEGORY_UNSPECIFIED,
+    CK_PROFILE_ID,
     CKC_X_509,
     CKK_EC,
     CKK_RSA,
@@ -35,12 +34,13 @@ use pkcs11_sys::{
     CKO_PRIVATE_KEY,
     CKO_PROFILE,
     CKO_PUBLIC_KEY,
-    CK_CERTIFICATE_CATEGORY_UNSPECIFIED,
-    CK_PROFILE_ID,
 };
 use tracing::debug;
 
 use crate::attribute::{Attribute, AttributeType, Attributes};
+
+const P256_OID: pkcs8::ObjectIdentifier =
+    pkcs8::ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
 
 #[derive(Debug)]
 pub struct DataObject {
@@ -49,30 +49,27 @@ pub struct DataObject {
     pub value: Vec<u8>,
 }
 
-// TODO(bweeks): resolve by improving the ObjectStore implementation.
-#[allow(clippy::derived_hash_with_manual_eq)]
-#[derive(Debug, Hash, Eq, Clone)]
-pub enum Object {
-    Certificate(Arc<dyn Certificate>),
-    PrivateKey(Arc<dyn PrivateKey>),
+// Usage of generics is a workaround for the following issue:
+// https://github.com/rust-lang/rust/issues/78808#issuecomment-1664416547
+#[derive(Debug, PartialEq, Hash, Eq)]
+pub enum Object<
+    DynCertificate: ?Sized + PartialEq = dyn Certificate,
+    DynPrivateKey: ?Sized + PartialEq = dyn PrivateKey,
+    DynPublicKey: ?Sized + PartialEq = dyn PublicKey,
+> {
+    Certificate(Arc<DynCertificate>),
+    PrivateKey(Arc<DynPrivateKey>),
     Profile(CK_PROFILE_ID),
-    PublicKey(Arc<dyn PublicKey>),
+    PublicKey(Arc<DynPublicKey>),
 }
 
-//  #[derive(PartialEq)] fails to compile because it tries to move the Box<_>ed
-//  values.
-//  https://github.com/rust-lang/rust/issues/78808#issuecomment-723304465
-impl PartialEq for Object {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Certificate(l0), Self::Certificate(r0)) => l0 == r0,
-            (Self::PrivateKey(l0), Self::PrivateKey(r0)) => l0 == r0,
-            (Self::Profile(l0), Self::Profile(r0)) => l0 == r0,
-            (Self::PublicKey(l0), Self::PublicKey(r0)) => l0 == r0,
-            (
-                Self::Certificate(_) | Self::PrivateKey(_) | Self::Profile(_) | Self::PublicKey(_),
-                _,
-            ) => false,
+impl Clone for Object {
+    fn clone(&self) -> Self {
+        match self {
+            Object::Certificate(cert) => Object::Certificate(cert.clone()),
+            Object::PrivateKey(private_key) => Object::PrivateKey(private_key.clone()),
+            Object::Profile(id) => Object::Profile(*id),
+            Object::PublicKey(public_key) => Object::PublicKey(public_key.clone()),
         }
     }
 }
@@ -81,18 +78,12 @@ impl Object {
     pub fn attribute(&self, type_: AttributeType) -> Option<Attribute> {
         match self {
             Object::Certificate(cert) => match type_ {
-                AttributeType::CertificateCategory => Some(Attribute::CertificateCategory(
-                    CK_CERTIFICATE_CATEGORY_UNSPECIFIED,
-                )),
+                AttributeType::CertificateCategory => {
+                    Some(Attribute::CertificateCategory(CK_CERTIFICATE_CATEGORY_UNSPECIFIED))
+                }
                 AttributeType::CertificateType => Some(Attribute::CertificateType(CKC_X_509)),
                 AttributeType::Class => Some(Attribute::Class(CKO_CERTIFICATE)),
-                AttributeType::Id => Some(Attribute::Id(
-                    crate::compoundid::encode(&crate::compoundid::Id {
-                        label: Some(cert.label()),
-                        public_key_hash: cert.public_key().public_key_hash(),
-                    })
-                    .ok()?,
-                )),
+                AttributeType::Id => Some(Attribute::Id(cert.id())),
                 AttributeType::Issuer => Some(Attribute::Issuer(cert.issuer())),
                 AttributeType::Label => Some(Attribute::Label(cert.label())),
                 AttributeType::Token => Some(Attribute::Token(true)),
@@ -110,48 +101,39 @@ impl Object {
                 AttributeType::AlwaysAuthenticate => Some(Attribute::AlwaysAuthenticate(false)),
                 AttributeType::Class => Some(Attribute::Class(CKO_PRIVATE_KEY)),
                 AttributeType::Decrypt => Some(Attribute::Decrypt(false)),
-                AttributeType::EcParams => {
-                    Some(Attribute::EcParams(p256::NistP256::OID.to_der().ok()?))
-                }
+                AttributeType::Derive => Some(Attribute::Derive(false)),
+                AttributeType::EcParams => Some(Attribute::EcParams(P256_OID.to_der().ok()?)),
                 AttributeType::Extractable => Some(Attribute::Extractable(false)),
-                AttributeType::Id => Some(Attribute::Id(
-                    crate::compoundid::encode(&crate::compoundid::Id {
-                        label: Some(private_key.label()),
-                        public_key_hash: private_key.public_key_hash(),
-                    })
-                    .ok()?,
-                )),
+                AttributeType::Id => Some(Attribute::Id(private_key.id())),
                 AttributeType::KeyType => Some(Attribute::KeyType(match private_key.algorithm() {
                     native_pkcs11_traits::KeyAlgorithm::Rsa => CKK_RSA,
                     native_pkcs11_traits::KeyAlgorithm::Ecc => CKK_EC,
                 })),
                 AttributeType::Label => Some(Attribute::Label(private_key.label())),
+                AttributeType::Local => Some(Attribute::Local(false)),
                 AttributeType::Modulus => {
-                    let modulus = private_key
-                        .find_public_key(backend())
-                        .ok()
-                        .flatten()
-                        .and_then(|public_key| {
+                    let modulus = private_key.find_public_key(backend()).ok().flatten().and_then(
+                        |public_key| {
                             let der = public_key.to_der();
                             RsaPublicKey::from_der(&der)
                                 .map(|pk| pk.modulus.as_bytes().to_vec())
                                 .ok()
-                        });
+                        },
+                    );
                     modulus.map(Attribute::Modulus)
                 }
                 AttributeType::NeverExtractable => Some(Attribute::NeverExtractable(true)),
                 AttributeType::Private => Some(Attribute::Private(true)),
                 AttributeType::PublicExponent => {
-                    let public_exponent = private_key
-                        .find_public_key(backend())
-                        .ok()
-                        .flatten()
-                        .and_then(|public_key| {
-                            let der = public_key.to_der();
-                            RsaPublicKey::from_der(&der)
-                                .map(|pk| pk.public_exponent.as_bytes().to_vec())
-                                .ok()
-                        });
+                    let public_exponent =
+                        private_key.find_public_key(backend()).ok().flatten().and_then(
+                            |public_key| {
+                                let der = public_key.to_der();
+                                RsaPublicKey::from_der(&der)
+                                    .map(|pk| pk.public_exponent.as_bytes().to_vec())
+                                    .ok()
+                            },
+                        );
                     public_exponent.map(Attribute::PublicExponent)
                 }
                 AttributeType::Sensitive => Some(Attribute::Sensitive(true)),
@@ -175,7 +157,9 @@ impl Object {
             },
             Object::PublicKey(pk) => match type_ {
                 AttributeType::Class => Some(Attribute::Class(CKO_PUBLIC_KEY)),
+                AttributeType::Derive => Some(Attribute::Derive(false)),
                 AttributeType::Label => Some(Attribute::Label(pk.label())),
+                AttributeType::Local => Some(Attribute::Local(false)),
                 AttributeType::Modulus => {
                     let key = pk.to_der();
                     let key = RsaPublicKey::from_der(&key).unwrap();
@@ -190,13 +174,7 @@ impl Object {
                     native_pkcs11_traits::KeyAlgorithm::Rsa => CKK_RSA,
                     native_pkcs11_traits::KeyAlgorithm::Ecc => CKK_EC,
                 })),
-                AttributeType::Id => Some(Attribute::Id(
-                    crate::compoundid::encode(&crate::compoundid::Id {
-                        label: Some(pk.label()),
-                        public_key_hash: pk.public_key_hash(),
-                    })
-                    .ok()?,
-                )),
+                AttributeType::Id => Some(Attribute::Id(pk.id())),
                 AttributeType::EcPoint => {
                     if pk.algorithm() != KeyAlgorithm::Ecc {
                         return None;
@@ -204,9 +182,7 @@ impl Object {
                     let wrapped = OctetString::new(pk.to_der()).ok()?;
                     Some(Attribute::EcPoint(wrapped.to_der().ok()?))
                 }
-                AttributeType::EcParams => {
-                    Some(Attribute::EcParams(p256::NistP256::OID.to_der().ok()?))
-                }
+                AttributeType::EcParams => Some(Attribute::EcParams(P256_OID.to_der().ok()?)),
                 _ => {
                     debug!("public_key: type_ unimplemented: {:?}", type_);
                     None
@@ -221,7 +197,7 @@ impl Object {
                 return false;
             }
         }
-        for other in &**others {
+        for other in others {
             if let Some(attr) = self.attribute(other.attribute_type()) {
                 if *other != attr {
                     return false;

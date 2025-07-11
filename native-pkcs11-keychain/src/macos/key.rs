@@ -62,11 +62,11 @@ fn sigalg_to_seckeyalg(
         SignatureAlgorithm::RsaPkcs1v15Sha512 => RSASignatureMessagePKCS1v15SHA512,
 
         // RSA Digest
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha1 => RSASignatureDigestPSSSHA1,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha224 => RSASignatureDigestPSSSHA224,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha256 => RSASignatureDigestPSSSHA256,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha384 => RSASignatureDigestPSSSHA384,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha512 => RSASignatureDigestPSSSHA512,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha1 => RSASignatureDigestPKCS1v15SHA1,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha224 => RSASignatureDigestPKCS1v15SHA224,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha256 => RSASignatureDigestPKCS1v15SHA256,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha384 => RSASignatureDigestPKCS1v15SHA384,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha512 => RSASignatureDigestPKCS1v15SHA512,
 
         // PSS
         SignatureAlgorithm::RsaPss {

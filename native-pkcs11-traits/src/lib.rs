@@ -224,7 +224,7 @@ pub trait Backend: Send + Sync {
 }
 
 pub fn random_label() -> String {
-    use rand::{distributions::Alphanumeric, Rng};
+    use rand::{distr::Alphanumeric, Rng};
     String::from("bumpkey ")
         + &rand::thread_rng()
             .sample_iter(&Alphanumeric)

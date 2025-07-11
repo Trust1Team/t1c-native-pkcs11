@@ -77,6 +77,16 @@ fn sigalg_to_seckeyalg(
                 native_pkcs11_traits::DigestType::Sha512 => RSASignatureDigestPSSSHA512,
             }
         }
+        SignatureAlgorithm::EcdsaDigestSha1 => ECDSASignatureDigestX962SHA1,
+        SignatureAlgorithm::EcdsaDigestSha224 => ECDSASignatureDigestX962SHA224,
+        SignatureAlgorithm::EcdsaDigestSha256 => ECDSASignatureDigestX962SHA256,
+        SignatureAlgorithm::EcdsaDigestSha384 => ECDSASignatureDigestX962SHA384,
+        SignatureAlgorithm::EcdsaDigestSha512 => ECDSASignatureDigestX962SHA512,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha1 => RSASignatureMessagePKCS1v15SHA1,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha224 => RSASignatureMessagePKCS1v15SHA224,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha256 => RSASignatureMessagePKCS1v15SHA256,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha384 => RSASignatureMessagePKCS1v15SHA384,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha512 => RSASignatureMessagePKCS1v15SHA512,
     };
     Ok(alg)
 }

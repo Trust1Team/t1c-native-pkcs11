@@ -44,19 +44,11 @@ fn sigalg_to_seckeyalg(
     let alg = match signature_algorithm {
         native_pkcs11_traits::SignatureAlgorithm::Ecdsa => ECDSASignatureRFC4754,
         native_pkcs11_traits::SignatureAlgorithm::RsaRaw => RSASignatureRaw,
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Raw => RSASignatureDigestPKCS1v15Raw,
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha1 => {
-            RSASignatureMessagePKCS1v15SHA1
-        }
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha384 => {
-            RSASignatureMessagePKCS1v15SHA384
-        }
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha256 => {
-            RSASignatureMessagePKCS1v15SHA256
-        }
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha512 => {
-            RSASignatureMessagePKCS1v15SHA512
-        }
+        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Raw => RSASignatureRaw,
+        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha1 => RSASignatureMessagePKCS1v15SHA1,
+        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha384 => RSASignatureMessagePKCS1v15SHA384,
+        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha256 => RSASignatureMessagePKCS1v15SHA256,
+        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha512 => RSASignatureMessagePKCS1v15SHA512,
         native_pkcs11_traits::SignatureAlgorithm::RsaPss {
             digest,
             mask_generation_function,
@@ -82,11 +74,13 @@ fn sigalg_to_seckeyalg(
         SignatureAlgorithm::EcdsaDigestSha256 => ECDSASignatureDigestX962SHA256,
         SignatureAlgorithm::EcdsaDigestSha384 => ECDSASignatureDigestX962SHA384,
         SignatureAlgorithm::EcdsaDigestSha512 => ECDSASignatureDigestX962SHA512,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha1 => RSASignatureMessagePKCS1v15SHA1,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha224 => RSASignatureMessagePKCS1v15SHA224,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha256 => RSASignatureMessagePKCS1v15SHA256,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha384 => RSASignatureMessagePKCS1v15SHA384,
-        SignatureAlgorithm::RsaDigestPkcs1v15Sha512 => RSASignatureMessagePKCS1v15SHA512,
+        
+        // Digest means that the data will not by digested by Apple
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha1 => RSASignatureDigestPKCS1v15SHA1,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha224 => RSASignatureDigestPKCS1v15SHA224,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha256 => RSASignatureDigestPKCS1v15SHA256,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha384 => RSASignatureDigestPKCS1v15SHA384,
+        SignatureAlgorithm::RsaDigestPkcs1v15Sha512 => RSASignatureDigestPKCS1v15SHA512,
     };
     Ok(alg)
 }

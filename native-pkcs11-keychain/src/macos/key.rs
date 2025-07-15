@@ -46,8 +46,9 @@ fn sigalg_to_seckeyalg(
         native_pkcs11_traits::SignatureAlgorithm::RsaRaw => RSASignatureRaw,
         native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Raw => RSASignatureRaw,
         native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha1 => RSASignatureMessagePKCS1v15SHA1,
-        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha384 => RSASignatureMessagePKCS1v15SHA384,
+        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha224 => RSASignatureMessagePKCS1v15SHA224,
         native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha256 => RSASignatureMessagePKCS1v15SHA256,
+        native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha384 => RSASignatureMessagePKCS1v15SHA384,
         native_pkcs11_traits::SignatureAlgorithm::RsaPkcs1v15Sha512 => RSASignatureMessagePKCS1v15SHA512,
         native_pkcs11_traits::SignatureAlgorithm::RsaPss {
             digest,

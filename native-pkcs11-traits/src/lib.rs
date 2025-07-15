@@ -71,8 +71,9 @@ pub enum SignatureAlgorithm {
     RsaRaw,
     RsaPkcs1v15Raw,
     RsaPkcs1v15Sha1,
-    RsaPkcs1v15Sha384,
+    RsaPkcs1v15Sha224,
     RsaPkcs1v15Sha256,
+    RsaPkcs1v15Sha384,
     RsaPkcs1v15Sha512,
     // Added signature algorithms for digest calc RSA
     RsaDigestPkcs1v15Sha1,
